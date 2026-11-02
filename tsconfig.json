@@ -1,0 +1,22 @@
+{
+  // Yalnızca saf modüller ve testler (Deno'ya özel dosyalar Supabase'de derlenir).
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "supabase/functions/_shared/types.ts",
+    "supabase/functions/_shared/scoring.ts",
+    "supabase/functions/_shared/pipeline.ts",
+    "supabase/functions/_shared/telegram.ts",
+    "tests/*.ts"
+  ]
+}

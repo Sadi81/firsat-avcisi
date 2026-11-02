@@ -1,0 +1,81 @@
+// Tek bir ham gözlemi işler: ürünü kaydet → geçmişi oku → gözlemi ekle → puanla →
+// fırsatı kaydet → gerekiyorsa bildir. Depolama ve bildirim arayüzle verilir (test edilebilir).
+
+import { categorize, scoreDeal } from "./scoring.ts";
+import type { Config, PriceHistory, RawDeal, ScoreResult } from "./types.ts";
+import { DEFAULT_CONFIG } from "./types.ts";
+
+export interface Store {
+  upsertProduct(deal: RawDeal, category: string): Promise<void>;
+  /** Yeni gözlem eklenmeden ÖNCE çağrılır, böylece minEver bu fiyatı içermez. */
+  getHistory(asin: string): Promise<PriceHistory>;
+  insertObservation(deal: RawDeal): Promise<number>;
+  insertDeal(asin: string, observationId: number, price: number, result: ScoreResult): Promise<number>;
+  lastNotified(asin: string): Promise<{ price: number; notifiedAt: string } | null>;
+  markNotified(dealId: number): Promise<void>;
+}
+
+export interface Notifier {
+  send(dealId: number, deal: RawDeal, result: ScoreResult): Promise<void>;
+}
+
+export interface ProcessOutcome {
+  asin: string;
+  dealId: number | null;
+  result: ScoreResult | null;
+  notified: boolean;
+}
+
+export function shouldNotify(
+  price: number,
+  result: ScoreResult,
+  last: { price: number; notifiedAt: string } | null,
+  cfg: Config,
+  now: Date,
+): boolean {
+  if (result.verdict === "şüpheli" || result.score < cfg.notifyThreshold) return false;
+  if (!last) return true;
+  const hoursSince = (now.getTime() - new Date(last.notifiedAt).getTime()) / 36e5;
+  if (hoursSince >= cfg.renotifyHours) return true;
+  // Aynı ürün kısa sürede tekrar düştüyse, en az %3 daha ucuzsa yine haber ver.
+  return price < last.price * 0.97;
+}
+
+/** Kaynaklardan gelen veriye güvenilmez: zorunlu alanları çalışma anında doğrula. */
+export function isValidRaw(x: unknown): x is RawDeal {
+  if (typeof x !== "object" || x === null) return false;
+  const d = x as Partial<RawDeal>;
+  return typeof d.asin === "string" && /^[A-Z0-9]{10}$/.test(d.asin) &&
+    typeof d.title === "string" && d.title.length > 0 &&
+    typeof d.price === "number" && d.price > 0 &&
+    typeof d.source === "string";
+}
+
+export async function processDeal(
+  deal: RawDeal,
+  store: Store,
+  notifier: Notifier,
+  cfg: Config = DEFAULT_CONFIG,
+  now: Date = new Date(),
+): Promise<ProcessOutcome> {
+  await store.upsertProduct(deal, categorize(deal.category, deal.title));
+  const history = await store.getHistory(deal.asin);
+  const observationId = await store.insertObservation(deal);
+
+  // Rutin fiyat örnekleri yalnızca geçmişi besler, puanlanmaz.
+  if (deal.isRegularPrice) {
+    return { asin: deal.asin, dealId: null, result: null, notified: false };
+  }
+
+  const result = scoreDeal(deal, history, cfg);
+  const dealId = await store.insertDeal(deal.asin, observationId, deal.price, result);
+
+  const last = await store.lastNotified(deal.asin);
+  let notified = false;
+  if (shouldNotify(deal.price, result, last, cfg, now)) {
+    await notifier.send(dealId, deal, result);
+    await store.markNotified(dealId);
+    notified = true;
+  }
+  return { asin: deal.asin, dealId, result, notified };
+}

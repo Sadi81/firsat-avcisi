@@ -1,0 +1,13 @@
+{
+  "name": "firsat-avcisi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "5.6.3"
+  }
+}

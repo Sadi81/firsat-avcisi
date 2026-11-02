@@ -1,0 +1,7 @@
+# Bu iki fonksiyon kendi gizli anahtarlarıyla doğrulama yapar
+# (collect: x-cron-secret, telegram-webhook: Telegram secret_token), Supabase JWT'si beklemez.
+[functions.collect]
+verify_jwt = false
+
+[functions.telegram-webhook]
+verify_jwt = false
