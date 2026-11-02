@@ -5,10 +5,10 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- 2 dakikada bir kaynakları tara (Yaniyo'ya düşük yük: tur başına 3 liste + en fazla 6 ürün sayfası)
+-- Her dakika kaynakları tara (tur başına 3 liste + en fazla 6 ürün sayfası)
 select cron.schedule(
   'firsat-collect',
-  '*/2 * * * *',
+  '* * * * *',
   $$
   select net.http_post(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/collect',

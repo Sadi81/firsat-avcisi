@@ -5,7 +5,7 @@ göre puanlar ve iyi olanları butonlu bir Telegram mesajıyla telefonunuza gön
 Otomatik satın alma bilerek yok: Amazon'un kullanım koşullarına aykırı ve hesabınızın kapatılmasına yol açabilir.
 
 ```
-Yaniyo liste sayfaları (2 dk'da bir)          ← elle POST da olur
+Yaniyo liste sayfaları (dakikada bir)          ← elle POST da olur
   → yeni + odak kategori (elektronik / alet / batarya) mi?
   → umut verici ise ürün sayfası: üstü çizili fiyat + tüm zamanlar en düşük/ortalama/en yüksek
   → puanlama (0-100)
@@ -47,7 +47,7 @@ Bu araç kişisel kullanım içindir ve şu sınırlarla çalışır (`supabase/
 
 - Yalnızca herkese açık sayfalar okunur: liste sayfalarındaki `__NEXT_DATA__` ve ürün sayfasının görünen metni.
   İç API'ye ve şifrelenmiş alanlara dokunulmaz, captcha aşılmaz.
-- Düşük frekans: 2 dakikada bir 3 liste sayfası ve tur başına en fazla 6 ürün sayfası, istekler arasında 1,5 sn beklenir.
+- Düşük frekans: her dakika 3 liste sayfası ve tur başına en fazla 6 ürün sayfası, istekler arasında 1,5 sn beklenir.
 - Bot kendini `FirsatAvcisi/0.1` olarak tanıtır, tarayıcı taklidi yapmaz.
 - 403/429/503 veya captcha görülürse tur durur, zorlamaz.
 - Satın alma linki Yaniyo'nun kendi yönlendirmesidir (`/go/<kod>`). Bot bu linki çağırmaz, tıklayan sizsiniz.
@@ -66,7 +66,7 @@ Bu araç kişisel kullanım içindir ve şu sınırlarla çalışır (`supabase/
 
 ## Kurulum
 
-Canlı kurulum: Supabase projesi `firsat-avcisi` (Frankfurt), zamanlayıcı 2 dakikada bir çalışıyor,
+Canlı kurulum: Supabase projesi `firsat-avcisi` (Frankfurt), zamanlayıcı her dakika çalışıyor,
 Telegram botu bağlı.
 
 Sıfırdan kurmak için:
