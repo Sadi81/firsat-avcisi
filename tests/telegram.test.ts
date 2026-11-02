@@ -92,3 +92,24 @@ test("fotoğraf yoksa doğrudan sendMessage", async () => {
     m.restore();
   }
 });
+
+test("mesajın ilk satırı gerçek indirim; fiyat ve kazanç hemen altında", () => {
+  const r = scoreDeal(deal, noHistory);
+  const lines = formatMessage(deal, r).split("\n");
+  assert.match(lines[0], /%\d+ GERÇEK İNDİRİM/);
+  assert.match(lines[1], /1\.500 TL/);
+  assert.match(lines[2], /KAZANÇ/);
+});
+
+test("Amazon butonu tek başına ilk satırda; karar butonları ikinci satırda", async () => {
+  const m = mockFetch([{ status: 200 }]);
+  try {
+    await telegramNotifier("TOKEN", "42").send(7, deal, scoreDeal(deal, noHistory));
+    const kb = (m.calls[0].body.reply_markup as { inline_keyboard: { text: string; url?: string; callback_data?: string }[][] }).inline_keyboard;
+    assert.equal(kb[0].length, 1);
+    assert.equal(kb[0][0].url, deal.url);
+    assert.deepEqual(kb[1].map((b) => b.callback_data ?? "url"), ["bought:7", "skipped:7", "url"]);
+  } finally {
+    m.restore();
+  }
+});

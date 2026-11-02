@@ -30,12 +30,19 @@ interface FormatOptions {
 
 export function formatMessage(deal: RawDeal, r: ScoreResult, opts: FormatOptions = {}): string {
   const { titleMax = 180, maxReasons = Infinity } = opts;
+  // Telegram'da yazı boyutu/rengi yok: indirimi en üste, kırmızı işaretli ve büyük harfle koyuyoruz.
+  const headline = r.referencePrice && r.savingTry > 0
+    ? [
+      `🔴🔴 <b>%${Math.round(r.realDiscountPct)} GERÇEK İNDİRİM</b> 🔴🔴`,
+      `💰 <b>${tl(deal.price)}</b>   <s>${tl(r.referencePrice)}</s>`,
+      `💸 <b>${tl(r.savingTry)} KAZANÇ</b>`,
+    ]
+    : [`💰 <b>${tl(deal.price)}</b>`];
   const lines = [
+    ...headline,
+    "",
     `${VERDICT_ICON[r.verdict] ?? ""} <b>${r.score}/100 · ${r.verdict.toUpperCase()}</b>`,
     `<b>${esc(deal.title.slice(0, titleMax))}</b>`,
-    r.referencePrice && r.savingTry > 0
-      ? `💰 <s>${tl(r.referencePrice)}</s> → <b>${tl(deal.price)}</b> (−%${Math.round(r.realDiscountPct)}, ${tl(r.savingTry)} kazanç)`
-      : `💰 <b>${tl(deal.price)}</b>`,
   ];
   if (deal.sourceStats) {
     const s = deal.sourceStats;
@@ -78,19 +85,20 @@ export function fitCaption(deal: RawDeal, r: ScoreResult, limit = CAPTION_LIMIT)
 export function telegramNotifier(token: string, chatId: string): Notifier {
   return {
     async send(dealId, deal, result) {
-      const links: { text: string; url: string }[] = [];
+      // 1. satır: tek başına, tam genişlikte "Amazon'da aç" (en hızlı erişim).
+      // 2. satır: karar butonları + fiyat geçmişi.
       const buy = buyUrl(deal);
-      if (buy) links.push({ text: "🛒 Amazon'da aç", url: buy });
+      const second: Record<string, string>[] = [
+        { text: "✅ Aldım", callback_data: `bought:${dealId}` },
+        { text: "❌ Geç", callback_data: `skipped:${dealId}` },
+      ];
       if (isHttps(deal.sourceUrl) && deal.sourceUrl !== buy) {
-        links.push({ text: "📊 Fiyat geçmişi", url: deal.sourceUrl });
+        second.push({ text: "📊 Geçmiş", url: deal.sourceUrl });
       }
       const reply_markup = {
         inline_keyboard: [
-          links,
-          [
-            { text: "✅ Aldım", callback_data: `bought:${dealId}` },
-            { text: "❌ Geç", callback_data: `skipped:${dealId}` },
-          ],
+          buy ? [{ text: "🛒 AMAZON'DA AÇ", url: buy }] : [],
+          second,
         ].filter((row) => row.length),
       };
       const call = (method: string, body: Record<string, unknown>) =>
