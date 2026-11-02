@@ -1,13 +1,15 @@
-// collect: pg_cron her dakika çağırır.
-//   GET/POST (gövdesiz)   → etkin kaynakları tara, yeni fırsatları işle
-//   POST [RawDeal, ...]   → dışarıdan gelen gözlemleri işle (elle giriş, başka tarayıcılar)
+// collect: pg_cron birkaç dakikada bir çağırır.
+//   POST "{}" veya gövdesiz  → etkin kaynakları tara, yeni fırsatları işle
+//   POST [RawDeal, ...]      → dışarıdan gelen gözlemleri işle (elle giriş; {asin:"B0..."} yeterli)
 // Kimlik doğrulama: x-cron-secret başlığı = CRON_SECRET
 
-import { isValidRaw, processDeal, type ProcessOutcome } from "../_shared/pipeline.ts";
+import { collectFromSource, type CollectReport } from "../_shared/collector.ts";
+import { isValidRaw, normalizeManual, processDeal, type ProcessOutcome } from "../_shared/pipeline.ts";
 import { SOURCES } from "../_shared/sources/index.ts";
+import { SourceBlockedError } from "../_shared/sources/yaniyo.ts";
 import { createSupabaseClient, supabaseStore } from "../_shared/supabase-store.ts";
 import { telegramNotifier } from "../_shared/telegram.ts";
-import { DEFAULT_CONFIG, type RawDeal } from "../_shared/types.ts";
+import { DEFAULT_CONFIG } from "../_shared/types.ts";
 
 function env(name: string): string {
   const v = Deno.env.get(name);
@@ -28,6 +30,14 @@ const json = (body: unknown, status = 200) =>
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 
+const summarize = (o: ProcessOutcome[]) =>
+  o.filter((x) => x.result).map((x) => ({
+    productKey: x.productKey,
+    score: x.result!.score,
+    verdict: x.result!.verdict,
+    notified: x.notified,
+  }));
+
 Deno.serve(async (req) => {
   if (!timingSafeEqual(req.headers.get("x-cron-secret") ?? "", env("CRON_SECRET"))) {
     return json({ error: "yetkisiz" }, 401);
@@ -40,11 +50,9 @@ Deno.serve(async (req) => {
   const store = supabaseStore(createSupabaseClient());
   const notifier = telegramNotifier(env("TELEGRAM_BOT_TOKEN"), env("TELEGRAM_CHAT_ID"));
 
-  // Ham gözlemleri topla
-  const incoming: RawDeal[] = [];
-  const errors: string[] = [];
   // pg_cron (pg_net) her zaman bir gövde gönderir; "{}" = kaynakları tara.
   const body = req.method === "POST" ? (await req.text()).trim() : "";
+
   if (body && body !== "{}") {
     let parsed: unknown;
     try {
@@ -52,45 +60,30 @@ Deno.serve(async (req) => {
     } catch {
       return json({ error: "geçersiz JSON" }, 400);
     }
-    const list = Array.isArray(parsed) ? parsed : [parsed];
-    for (const d of list) {
-      const raw: unknown = typeof d === "object" && d !== null ? { source: "manual", ...d } : d;
-      if (isValidRaw(raw)) incoming.push(raw);
-      else errors.push(`geçersiz kayıt: ${JSON.stringify(d).slice(0, 200)}`);
-    }
-  } else {
-    for (const src of SOURCES.filter((s) => s.enabled)) {
+    const outcomes: ProcessOutcome[] = [];
+    const errors: string[] = [];
+    for (const d of Array.isArray(parsed) ? parsed : [parsed]) {
+      const raw = normalizeManual(d);
+      if (!isValidRaw(raw)) {
+        errors.push(`geçersiz kayıt: ${JSON.stringify(d).slice(0, 200)}`);
+        continue;
+      }
       try {
-        for (const raw of await src.fetchDeals()) {
-          if (isValidRaw(raw)) incoming.push(raw);
-          else errors.push(`${src.name}: geçersiz kayıt ${JSON.stringify(raw).slice(0, 200)}`);
-        }
+        outcomes.push(await processDeal(raw, store, notifier, cfg));
       } catch (e) {
-        errors.push(`${src.name}: ${(e as Error).message}`);
+        errors.push(`${raw.productKey}: ${(e as Error).message}`);
       }
     }
+    return json({ processed: outcomes.length, deals: summarize(outcomes), errors });
   }
 
-  // Sırayla işle (aynı ASIN'in iki kaydı yarışmasın)
-  const outcomes: ProcessOutcome[] = [];
-  for (const raw of incoming) {
-    try {
-      outcomes.push(await processDeal(raw, store, notifier, cfg));
-    } catch (e) {
-      errors.push(`${raw.asin}: ${(e as Error).message}`);
-    }
+  const reports: CollectReport[] = [];
+  for (const src of SOURCES.filter((s) => s.enabled)) {
+    reports.push(
+      await collectFromSource(src, store, notifier, cfg, undefined, (e) => e instanceof SourceBlockedError),
+    );
   }
-
+  const errors = reports.flatMap((r) => r.errors);
   if (errors.length) console.error(errors);
-  return json({
-    processed: outcomes.length,
-    notified: outcomes.filter((o) => o.notified).length,
-    deals: outcomes.filter((o) => o.result).map((o) => ({
-      asin: o.asin,
-      score: o.result!.score,
-      verdict: o.result!.verdict,
-      notified: o.notified,
-    })),
-    errors,
-  }, errors.length && !outcomes.length ? 500 : 200);
+  return json(reports.map((r) => ({ ...r, outcomes: summarize(r.outcomes) })));
 });

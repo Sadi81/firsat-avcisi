@@ -19,22 +19,32 @@ export function supabaseStore(db: SupabaseClient): Store {
   return {
     async upsertProduct(d, category) {
       const row: Record<string, unknown> = {
-        asin: d.asin,
+        product_key: d.productKey,
         title: d.title,
         category,
         updated_at: new Date().toISOString(),
       };
       // Kaynakta olmayan alanlar mevcut değerleri ezmesin.
-      if (d.brand != null) row.brand = d.brand;
-      if (d.rating != null) row.rating = d.rating;
-      if (d.reviewCount != null) row.review_count = d.reviewCount;
-      if (d.url != null) row.url = d.url;
-      check(await db.from("products").upsert(row, { onConflict: "asin" }), "upsertProduct");
+      const optional: [string, unknown][] = [
+        ["asin", d.asin], ["brand", d.brand], ["rating", d.rating],
+        ["review_count", d.reviewCount], ["buy_url", d.url], ["source_url", d.sourceUrl],
+        ["image_url", d.imageUrl],
+      ];
+      for (const [k, v] of optional) if (v != null) row[k] = v;
+      check(await db.from("products").upsert(row, { onConflict: "product_key" }), "upsertProduct");
     },
 
-    async getHistory(asin) {
+    async hasObservation(productKey, source, observedAt) {
+      const { count, error } = await db.from("price_observations")
+        .select("id", { count: "exact", head: true })
+        .eq("product_key", productKey).eq("source", source).eq("observed_at", observedAt);
+      if (error) throw new Error(`hasObservation: ${error.message}`);
+      return (count ?? 0) > 0;
+    },
+
+    async getHistory(productKey) {
       const rows = check(
-        await db.rpc("price_history", { p_asin: asin }),
+        await db.rpc("price_history", { p_key: productKey }),
         "price_history",
       ) as { regular_samples: number; median_regular_90d: string | null; min_ever: string | null }[];
       const r = rows?.[0];
@@ -48,9 +58,13 @@ export function supabaseStore(db: SupabaseClient): Store {
     async insertObservation(d) {
       const row = check(
         await db.from("price_observations").insert({
-          asin: d.asin,
+          product_key: d.productKey,
           price: d.price,
           list_price: d.listPrice ?? null,
+          source_discount_pct: d.sourceDiscountPct ?? null,
+          stats_min: d.sourceStats?.min ?? null,
+          stats_avg: d.sourceStats?.avg ?? null,
+          stats_max: d.sourceStats?.max ?? null,
           seller_name: d.sellerName ?? null,
           seller_is_amazon: d.sellerIsAmazon ?? null,
           is_regular: d.isRegularPrice ?? false,
@@ -62,10 +76,10 @@ export function supabaseStore(db: SupabaseClient): Store {
       return row.id;
     },
 
-    async insertDeal(asin, observationId, price, r) {
+    async insertDeal(productKey, observationId, price, r) {
       const row = check(
         await db.from("deals").insert({
-          asin,
+          product_key: productKey,
           observation_id: observationId,
           price,
           reference_price: r.referencePrice,
@@ -83,10 +97,10 @@ export function supabaseStore(db: SupabaseClient): Store {
       return row.id;
     },
 
-    async lastNotified(asin) {
+    async lastNotified(productKey) {
       const rows = check(
         await db.from("deals").select("price, notified_at")
-          .eq("asin", asin).not("notified_at", "is", null)
+          .eq("product_key", productKey).not("notified_at", "is", null)
           .order("notified_at", { ascending: false }).limit(1),
         "lastNotified",
       ) as { price: string; notified_at: string }[];

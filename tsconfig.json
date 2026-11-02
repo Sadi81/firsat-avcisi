@@ -17,6 +17,8 @@
     "supabase/functions/_shared/scoring.ts",
     "supabase/functions/_shared/pipeline.ts",
     "supabase/functions/_shared/telegram.ts",
+    "supabase/functions/_shared/collector.ts",
+    "supabase/functions/_shared/sources/*.ts",
     "tests/*.ts"
   ]
 }

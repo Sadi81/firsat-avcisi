@@ -1,67 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isValidRaw, processDeal, type Notifier, type Store } from "../supabase/functions/_shared/pipeline.ts";
+import { isValidRaw, normalizeManual, processDeal } from "../supabase/functions/_shared/pipeline.ts";
+import { memoryStore, recordingNotifier } from "./helpers.ts";
 import { formatMessage } from "../supabase/functions/_shared/telegram.ts";
 import { scoreDeal } from "../supabase/functions/_shared/scoring.ts";
 import type { RawDeal } from "../supabase/functions/_shared/types.ts";
 
-/** Bellekte çalışan sahte depo: price_history SQL fonksiyonunun mantığını taklit eder. */
-function memoryStore() {
-  const obs: { asin: string; price: number; regular: boolean; at: Date }[] = [];
-  const deals: { id: number; asin: string; price: number; notifiedAt: string | null }[] = [];
-  let clock = new Date("2026-11-02T10:00:00Z");
-  const store: Store = {
-    async upsertProduct() {},
-    async getHistory(asin) {
-      const mine = obs.filter((o) => o.asin === asin);
-      const reg = mine.filter((o) => o.regular).map((o) => o.price).sort((a, b) => a - b);
-      const mid = reg.length / 2;
-      return {
-        regularSamples: reg.length,
-        medianRegular90d: reg.length
-          ? (reg.length % 2 ? reg[Math.floor(mid)] : (reg[mid - 1] + reg[mid]) / 2)
-          : null,
-        minEver: mine.length ? Math.min(...mine.map((o) => o.price)) : null,
-      };
-    },
-    async insertObservation(d) {
-      obs.push({ asin: d.asin, price: d.price, regular: !!d.isRegularPrice, at: clock });
-      return obs.length;
-    },
-    async insertDeal(asin, _obsId, price) {
-      deals.push({ id: deals.length + 1, asin, price, notifiedAt: null });
-      return deals.length;
-    },
-    async lastNotified(asin) {
-      const n = deals.filter((d) => d.asin === asin && d.notifiedAt).at(-1);
-      return n ? { price: n.price, notifiedAt: n.notifiedAt! } : null;
-    },
-    async markNotified(id) {
-      deals[id - 1].notifiedAt = clock.toISOString();
-    },
-  };
-  return {
-    store,
-    obs,
-    deals,
-    advance(hours: number) {
-      clock = new Date(clock.getTime() + hours * 36e5);
-    },
-    get now() {
-      return clock;
-    },
-  };
-}
-
-function recordingNotifier() {
-  const sent: number[] = [];
-  const notifier: Notifier = { async send(id) { sent.push(id); } };
-  return { notifier, sent };
-}
-
 const item = (price: number, extra: Partial<RawDeal> = {}): RawDeal => ({
   source: "test",
-  asin: "B0TEST0001",
+  productKey: "amazon:B0TEST0001",
   title: "Makita DHP485Z 18V Darbeli Matkap",
   price,
   sellerIsAmazon: true,
@@ -105,7 +52,7 @@ test("eşik altındaki ve şüpheli fırsatlar bildirilmez ama kaydedilir", asyn
   const n = recordingNotifier();
   const weak = await processDeal(item(4500, { listPrice: 5000 }), m.store, n.notifier, undefined, m.now);
   const scam = await processDeal(
-    item(300, { asin: "B0TEST0002", listPrice: 6000, sellerIsAmazon: false }),
+    item(300, { productKey: "amazon:B0TEST0002", listPrice: 6000, sellerIsAmazon: false }),
     m.store, n.notifier, undefined, m.now,
   );
   assert.equal(weak.notified, false);
@@ -117,7 +64,7 @@ test("eşik altındaki ve şüpheli fırsatlar bildirilmez ama kaydedilir", asyn
 
 test("geçersiz ham kayıtlar reddedilir", () => {
   assert.equal(isValidRaw(item(100)), true);
-  assert.equal(isValidRaw({ ...item(100), asin: "kisa" }), false);
+  assert.equal(isValidRaw({ ...item(100), productKey: "kisa" }), false);
   assert.equal(isValidRaw({ ...item(100), price: 0 }), false);
   assert.equal(isValidRaw({ ...item(100), title: "" }), false);
 });
@@ -127,5 +74,13 @@ test("Telegram mesajı HTML kaçışı yapar ve özet içerir", () => {
   const msg = formatMessage(d, scoreDeal(d, { regularSamples: 5, medianRegular90d: 5000, minEver: null }));
   assert.ok(msg.includes("Kablo &lt;USB-C&gt; &amp; şarj"));
   assert.ok(msg.includes("/100"));
-  assert.ok(msg.includes("B0TEST0001"));
+  assert.ok(msg.includes("amazon:B0TEST0001"));
+});
+
+test("elle giriş: asin verilirse ürün anahtarı amazon:<ASIN> olur", () => {
+  const n = normalizeManual({ asin: "B09RN7DYGP", title: "x", price: 10 });
+  assert.equal(isValidRaw(n), true);
+  assert.equal((n as { productKey: string }).productKey, "amazon:B09RN7DYGP");
+  assert.equal((n as { source: string }).source, "manual");
+  assert.equal(isValidRaw(normalizeManual({ asin: "yanlis", title: "x", price: 10 })), false);
 });

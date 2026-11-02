@@ -12,40 +12,62 @@ import type {
 } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 
-// Sıra önemli: "18V batarya" hem alet hem batarya kelimesi içerebilir, batarya önce.
+// Sıra önemli:
+//  1) Alet TÜRÜ kelimeleri önce: "Akülü Vidalama", "Şarjlı Tornavida (Li-ion)" alettir.
+//  2) Sonra batarya: "Makita 18V 5.0Ah Batarya" alet türü içermez → batarya.
+//  3) Marka adları en sonda yedek: yalnız başına marka ürünü alete çevirir.
 // Kısa/belirsiz kelimeler için kelime sınırlı regex kullanılır ("ram" ≠ "program").
 const CATEGORY_PATTERNS: [Category, RegExp[]][] = [
-  ["batarya", [
-    /batarya/, /akü/, /power ?bank/, /şarj(lı| edilebilir) pil/, /lityum/, /li-?ion/,
-    /lifepo4/, /(^|[^\p{L}])pil([^\p{L}]|$)/u, /\b(18650|21700)\b/, /\d+([.,]\d+)? ?ah\b/,
-  ]],
   ["alet", [
     /matkap/, /vidalama/, /taşlama/, /tornavida/, /testere/, /kompresör/, /lehim/,
     /multimetre/, /pense/, /anahtar takımı/, /lokma/, /el aleti/, /hırdavat/, /kırıcı/,
-    /delici/, /zımpara/, /dekupaj/, /makita/, /dewalt/, /milwaukee/, /bosch professional/,
-    /metabo/, /ryobi/, /einhell/, /stanley/, /black\+decker/,
+    /delici/, /zımpara/, /dekupaj/, /yapı market/, /somun sıkma/, /darbeli/,
+  ]],
+  ["batarya", [
+    /batarya/, /akü/, /power ?bank/, /şarj(lı| edilebilir) pil/, /lityum/, /li-?ion/,
+    /lifepo4/, /(^|[^\p{L}])pil([^\p{L}]|$)/u, /\b(18650|21700)\b/, /\d+([.,]\d+)? ?ah\b/,
   ]],
   ["elektronik", [
     /kulaklık/, /telefon/, /tablet/, /laptop/, /dizüstü/, /bilgisayar/, /monitör/,
     /\b(ssd|hdd|nvme|usb|tv|ram|ddr[45])\b/, /harddisk/, /şarj/, /kamera/, /hoparlör/,
     /akıllı saat/, /mouse/, /klavye/, /televizyon/, /router/, /modem/, /ekran kartı/,
-    /işlemci/, /elektronik/, /bluetooth/, /kindle/, /playstation/, /xbox/,
+    /işlemci/, /elektronik/, /bluetooth/, /kindle/, /playstation/, /xbox/, /ağ cihazı/,
+  ]],
+  ["alet", [
+    /makita/, /dewalt/, /milwaukee/, /bosch professional/, /metabo/, /ryobi/, /einhell/,
+    /stanley/, /black\+decker/, /worx/,
   ]],
 ];
 
-export function categorize(rawCategory: string | null | undefined, title: string): Category {
-  const text = `${rawCategory ?? ""} ${title}`.toLocaleLowerCase("tr-TR");
+// "Matkap (Akü Dahil Değildir)" gibi ifadeler ürünü bataryaya çevirmesin.
+const NOT_INCLUDED = /\(?\s*(akü|batarya|pil)[^()]*dahil değil(dir)?\s*\)?/g;
+
+function matchCategory(text: string): Category | null {
   for (const [cat, patterns] of CATEGORY_PATTERNS) {
     if (patterns.some((re) => re.test(text))) return cat;
   }
-  return "diger";
+  return null;
+}
+
+/** Önce kaynağın kategorisi (daha güvenilir), sonra başlık. */
+export function categorize(rawCategory: string | null | undefined, title: string): Category {
+  const cat = (rawCategory ?? "").toLocaleLowerCase("tr-TR");
+  const t = title.toLocaleLowerCase("tr-TR").replace(NOT_INCLUDED, " ");
+  return (cat && matchCategory(cat)) || matchCategory(t) || "diger";
 }
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const round1 = (x: number) => Math.round(x * 10) / 10;
 const tl = (x: number) => `${Math.round(x).toLocaleString("tr-TR")} TL`;
 
-/** Referans fiyatı seç: önce kendi fiyat geçmişimiz, yoksa Amazon'un üstü çizili fiyatı. */
+const CONFIDENCE: Record<ReferenceKind, number> = {
+  history: 1, // kendi rutin fiyat geçmişimiz
+  source_avg: 0.9, // kaynağın tüm zamanlar ortalaması (fırsat dönemlerini de içerir, temkinli)
+  list: 0.6, // üstü çizili fiyat, sıklıkla şişirilmiş
+  none: 0,
+};
+
+/** Referans fiyat: kendi geçmişimiz > kaynağın tüm zamanlar ortalaması > üstü çizili fiyat. */
 function pickReference(
   deal: RawDeal,
   history: PriceHistory,
@@ -53,6 +75,9 @@ function pickReference(
 ): { ref: number | null; kind: ReferenceKind } {
   if (history.regularSamples >= cfg.minRegularSamples && history.medianRegular90d) {
     return { ref: history.medianRegular90d, kind: "history" };
+  }
+  if (deal.sourceStats?.avg) {
+    return { ref: deal.sourceStats.avg, kind: "source_avg" };
   }
   if (deal.listPrice && deal.listPrice > deal.price) {
     return { ref: deal.listPrice, kind: "list" };
@@ -72,31 +97,31 @@ export function scoreDeal(
 
   const discount = ref ? Math.max(0, ((ref - deal.price) / ref) * 100) : 0;
   const saving = ref ? Math.max(0, ref - deal.price) : 0;
-  // Üstü çizili fiyat sıklıkla şişirilmiş olduğu için ona daha az güveniyoruz.
-  const confidence = kind === "history" ? 1 : 0.6;
+  const confidence = CONFIDENCE[kind];
 
   let score = 0;
 
   // 1) Gerçek indirim (0-45): %30 altı puan getirmez, %85+ tam puan.
-  const discountPts = clamp((discount - 30) / (85 - 30), 0, 1) * 45 * confidence;
-  score += discountPts;
+  score += clamp((discount - 30) / (85 - 30), 0, 1) * 45 * confidence;
   if (kind === "history") {
     reasons.push(`Son 90 gün medyanı ${tl(ref!)} → gerçek indirim %${Math.round(discount)}`);
+  } else if (kind === "source_avg") {
+    reasons.push(`Tüm zamanlar ortalaması ${tl(ref!)} → gerçek indirim %${Math.round(discount)}`);
   } else if (kind === "list") {
     reasons.push(`Üstü çizili fiyat ${tl(ref!)} → indirim %${Math.round(discount)} (güven düşük)`);
-    flags.push("Referans Amazon'un üstü çizili fiyatı; şişirilmiş olabilir, fiyat geçmişi yok");
+    flags.push("Referans yalnızca üstü çizili fiyat; şişirilmiş olabilir, fiyat geçmişi yok");
   } else {
     flags.push("Referans fiyat yok; indirim doğrulanamadı");
   }
 
-  // Elimizde hem geçmiş hem üstü çizili fiyat varsa, şişirmeyi yakala.
-  if (
-    deal.listPrice && history.medianRegular90d &&
-    history.regularSamples >= cfg.minRegularSamples &&
-    deal.listPrice > history.medianRegular90d * 1.5
-  ) {
+  // Görünen indirim ile gerçek indirim çok farklıysa açıkça söyle.
+  const claimed = deal.sourceDiscountPct ??
+    (deal.listPrice && deal.listPrice > deal.price
+      ? ((deal.listPrice - deal.price) / deal.listPrice) * 100
+      : null);
+  if (claimed != null && kind !== "list" && kind !== "none" && claimed - discount >= 20) {
     flags.push(
-      `Üstü çizili fiyat (${tl(deal.listPrice)}) gerçek fiyatın çok üstünde; Amazon'daki % yanıltıcı`,
+      `Görünen indirim %${Math.round(claimed)}, gerçek indirim %${Math.round(discount)}: üstü çizili fiyat yanıltıcı`,
     );
   }
 
@@ -106,34 +131,26 @@ export function scoreDeal(
   }
   if (saving > 0) reasons.push(`Kazanç ${tl(saving)}`);
 
-  // 3) Satıcı (-5..+15)
+  // 3) Satıcı (0..+15)
   if (deal.sellerIsAmazon === true) {
     score += 15;
     reasons.push("Satıcı Amazon");
   } else if (deal.sellerIsAmazon === false) {
     reasons.push(`Üçüncü taraf satıcı${deal.sellerName ? `: ${deal.sellerName}` : ""}`);
-  } else {
-    score -= 5;
-    flags.push("Satıcı bilinmiyor");
   }
 
   // 4) Ürün kalitesi (-10..+10)
   const r = deal.rating, n = deal.reviewCount;
-  if (r == null || n == null) {
-    reasons.push("Yorum bilgisi yok");
-  } else if (n < 10) {
-    reasons.push(`Az yorum (${n})`);
-  } else if (r >= 4.3) {
-    score += 10;
-    reasons.push(`Puan ${r} (${n} yorum)`);
-  } else if (r >= 4.0) {
-    score += 6;
-    reasons.push(`Puan ${r} (${n} yorum)`);
-  } else if (r < 3.5) {
-    score -= 10;
-    flags.push(`Düşük puan: ${r}`);
-  } else {
-    score += 2;
+  if (r != null && n != null) {
+    if (n < 10) {
+      reasons.push(`Az yorum (${n})`);
+    } else if (r < 3.5) {
+      score -= 10;
+      flags.push(`Düşük puan: ${r}`);
+    } else {
+      score += r >= 4.3 ? 10 : r >= 4.0 ? 6 : 2;
+      reasons.push(`Puan ${r} (${n} yorum)`);
+    }
   }
 
   // 5) Kategori (0-10)
@@ -142,10 +159,16 @@ export function scoreDeal(
     reasons.push(`Kategori: ${category}`);
   }
 
-  // 6) Tüm zamanların en düşüğü (+5)
-  if (history.minEver != null && deal.price < history.minEver) {
-    score += 5;
-    reasons.push(`Gördüğümüz en düşük fiyat (önceki: ${tl(history.minEver)})`);
+  // 6) Dip fiyat sinyalleri (en fazla +8)
+  const ownLow = history.minEver != null && deal.price < history.minEver;
+  const sourceLow = deal.isAllTimeLow === true ||
+    (deal.sourceStats != null && deal.price <= deal.sourceStats.min);
+  if (ownLow || sourceLow) {
+    score += 8;
+    reasons.push("Tüm zamanların en düşük fiyatı");
+  } else if ((deal.lowestInMonths ?? 0) >= 3) {
+    score += Math.min(6, deal.lowestInMonths!);
+    reasons.push(`Son ${deal.lowestInMonths} ayın en düşük fiyatı`);
   }
 
   // Risk bayrakları
@@ -155,16 +178,23 @@ export function scoreDeal(
     suspicious = true;
     flags.push("Üçüncü taraf satıcıda aşırı indirim: satıcı puanını ve kuruluş tarihini kontrol et");
   }
-  if (deal.sellerIsAmazon === true && discount >= 70 && kind === "history") {
-    flags.push("Olası fiyat hatası: hızlı al, Amazon siparişi iptal edebilir");
+  if (discount >= 70 && (kind === "history" || kind === "source_avg")) {
+    flags.push(
+      deal.sellerIsAmazon === true
+        ? "Olası fiyat hatası: hızlı al, Amazon siparişi iptal edebilir"
+        : "Olası fiyat hatası; Amazon sayfasında satıcının Amazon olduğunu kontrol et",
+    );
+  }
+  if (deal.sellerIsAmazon == null && kind !== "none") {
+    flags.push("Satıcı bilgisi yok: Amazon sayfasında kontrol et");
   }
 
   score = Math.round(clamp(score, 0, 100));
   const verdict: Verdict = suspicious
     ? "şüpheli"
-    : score >= 75
+    : score >= cfg.verdictGreat
     ? "kaçırma"
-    : score >= 55
+    : score >= cfg.verdictGood
     ? "iyi"
     : "zayıf";
 

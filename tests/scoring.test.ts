@@ -6,7 +6,7 @@ import type { PriceHistory, RawDeal } from "../supabase/functions/_shared/types.
 const noHistory: PriceHistory = { regularSamples: 0, medianRegular90d: null, minEver: null };
 const base: RawDeal = {
   source: "test",
-  asin: "B000000001",
+  productKey: "amazon:B000000001",
   title: "Bosch Professional GSR 18V-55 Akülü Vidalama Matkap",
   price: 1200,
   sellerIsAmazon: true,
@@ -14,7 +14,11 @@ const base: RawDeal = {
   reviewCount: 320,
 };
 
-test("kategori: batarya aletten önce gelir, kelime sınırları doğru", () => {
+test("kategori: alet türü > batarya > elektronik > marka; kelime sınırları doğru", () => {
+  assert.equal(categorize(null, "Black+Decker Şarjlı Tornavida 3.6V Li-ion"), "alet");
+  assert.equal(categorize("Akülü Tornavida akulu tornavida", "Black+Decker BCF611SCK"), "alet");
+  assert.equal(categorize(null, "Einhell Professional akülü kompresör"), "alet");
+  assert.equal(categorize(null, "Makita BL1850B"), "alet");
   assert.equal(categorize(null, "Makita BL1850B 18V 5.0Ah Batarya"), "batarya");
   assert.equal(categorize(null, "Einhell 18V 4,0 Ah akü"), "batarya");
   assert.equal(categorize(null, "Duracell AA Pil 8'li"), "batarya");
@@ -87,4 +91,50 @@ test("puan her zaman 0-100 arasında", () => {
     noHistory,
   );
   assert.ok(r.score >= 0 && r.score <= 100);
+});
+
+test("kategori: 'akü dahil değildir' matkabı bataryaya çevirmez; kaynak kategorisi önceliklidir", () => {
+  assert.equal(categorize(null, "WORX WX-JCR.9 20Volt Kömürsüz Darbeli Matkap (Akü Dahil Değildir)"), "alet");
+  assert.equal(categorize("Matkap matkap", "WORX WX-JCR.9 20Volt (Akü Dahil Değildir)"), "alet");
+  assert.equal(categorize("Ağ Cihazı ag cihazi", "TP-Link Archer VR400"), "elektronik");
+});
+
+test("Yaniyo örneği: görünen %52 indirim, fiyat tüm zamanlar ortalamasının üstünde → zayıf + uyarı", () => {
+  const r = scoreDeal({
+    source: "yaniyo",
+    productKey: "yaniyo:NHA8N8RSNTG",
+    title: "WORX WX-JCR.9 20Volt Kömürsüz Profesyonel Darbeli Matkap (Akü Dahil Değildir)",
+    category: "Matkap matkap",
+    price: 4611.61,
+    listPrice: 9592.15,
+    sourceDiscountPct: 51.9,
+    sourceStats: { min: 2691.26, avg: 4559.15, max: 10272.99 },
+  }, noHistory);
+  assert.equal(r.referenceKind, "source_avg");
+  assert.equal(r.realDiscountPct, 0);
+  assert.equal(r.verdict, "zayıf");
+  assert.ok(r.flags.some((f) => f.includes("Görünen indirim %52, gerçek indirim %0")));
+});
+
+test("kaynak istatistiğine göre gerçek dip fiyat (satıcı bilinmiyor) → bildirim eşiğini geçer", () => {
+  const r = scoreDeal({
+    source: "yaniyo",
+    productKey: "yaniyo:ABCDEF1234",
+    title: "Makita DHP485Z 18V Darbeli Matkap",
+    price: 1500,
+    sourceDiscountPct: 70,
+    sourceStats: { min: 1500, avg: 5200, max: 6100 },
+  }, noHistory);
+  assert.equal(r.referenceKind, "source_avg");
+  assert.ok(r.realDiscountPct > 70);
+  assert.ok(r.score >= 60, `score=${r.score}`);
+  assert.ok(r.reasons.some((x) => x.includes("Tüm zamanların en düşük")));
+  assert.ok(r.flags.some((f) => f.includes("satıcının Amazon olduğunu kontrol et")));
+});
+
+test("son N ayın en düşüğü küçük bir artı verir", () => {
+  const stats = { min: 800, avg: 2000, max: 2600 };
+  const plain = scoreDeal({ ...base, sellerIsAmazon: null, price: 1000, sourceStats: stats }, noHistory);
+  const low = scoreDeal({ ...base, sellerIsAmazon: null, price: 1000, sourceStats: stats, lowestInMonths: 6 }, noHistory);
+  assert.equal(low.score - plain.score, 6);
 });

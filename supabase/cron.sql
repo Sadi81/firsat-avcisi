@@ -7,10 +7,10 @@ create extension if not exists pg_net;
 
 select vault.create_secret('<CRON_SECRET>', 'firsat_cron_secret');
 
--- Her dakika kaynakları tara
+-- 2 dakikada bir kaynakları tara (Yaniyo'ya düşük yük: tur başına 3 liste + en fazla 6 ürün sayfası)
 select cron.schedule(
   'firsat-collect',
-  '* * * * *',
+  '*/2 * * * *',
   $$
   select net.http_post(
     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/collect',
