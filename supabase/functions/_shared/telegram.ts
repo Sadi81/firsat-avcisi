@@ -23,10 +23,16 @@ export function buyUrl(deal: RawDeal): string | null {
   return isHttps(deal.sourceUrl) ? deal.sourceUrl : null;
 }
 
-export function formatMessage(deal: RawDeal, r: ScoreResult): string {
+interface FormatOptions {
+  titleMax?: number;
+  maxReasons?: number;
+}
+
+export function formatMessage(deal: RawDeal, r: ScoreResult, opts: FormatOptions = {}): string {
+  const { titleMax = 180, maxReasons = Infinity } = opts;
   const lines = [
     `${VERDICT_ICON[r.verdict] ?? ""} <b>${r.score}/100 · ${r.verdict.toUpperCase()}</b>`,
-    `<b>${esc(deal.title.slice(0, 180))}</b>`,
+    `<b>${esc(deal.title.slice(0, titleMax))}</b>`,
     r.referencePrice && r.savingTry > 0
       ? `💰 <s>${tl(r.referencePrice)}</s> → <b>${tl(deal.price)}</b> (−%${Math.round(r.realDiscountPct)}, ${tl(r.savingTry)} kazanç)`
       : `💰 <b>${tl(deal.price)}</b>`,
@@ -35,12 +41,38 @@ export function formatMessage(deal: RawDeal, r: ScoreResult): string {
     const s = deal.sourceStats;
     lines.push(`📈 Tüm zamanlar: en düşük ${tl(s.min)} · ort. ${tl(s.avg)} · en yüksek ${tl(s.max)}`);
   }
-  lines.push("", ...r.reasons.map((x) => `• ${esc(x)}`));
+  const reasons = r.reasons.slice(0, maxReasons);
+  if (reasons.length) lines.push("", ...reasons.map((x) => `• ${esc(x)}`));
   if (r.flags.length) {
     lines.push("", ...r.flags.map((x) => `⚠️ ${esc(x)}`));
   }
   lines.push("", `<i>Kaynak: ${esc(deal.source)} · ${esc(deal.productKey)}</i>`);
   return lines.join("\n");
+}
+
+/** Telegram'ın saydığı uzunluk: HTML etiketleri hariç, varlıklar tek karakter. */
+export function visibleLength(html: string): number {
+  return html.replace(/<[^>]+>/g, "").replace(/&(amp|lt|gt);/g, "x").length;
+}
+
+/** Fotoğraf altı yazısı Telegram'da en fazla 1024 karakter: sığana kadar ayrıntıyı azalt. */
+export const CAPTION_LIMIT = 1024;
+export function fitCaption(deal: RawDeal, r: ScoreResult, limit = CAPTION_LIMIT): string {
+  const variants: FormatOptions[] = [
+    {},
+    { maxReasons: 3 },
+    { maxReasons: 0 },
+    { maxReasons: 0, titleMax: 90 },
+  ];
+  for (const v of variants) {
+    const text = formatMessage(deal, r, v);
+    if (visibleLength(text) <= limit) return text;
+  }
+  // Son çare: uyarılar bile sığmıyorsa yalnızca başlık + fiyat.
+  return formatMessage({ ...deal, sourceStats: null }, { ...r, reasons: [], flags: r.flags.slice(0, 2) }, {
+    maxReasons: 0,
+    titleMax: 90,
+  });
 }
 
 export function telegramNotifier(token: string, chatId: string): Notifier {
@@ -52,24 +84,31 @@ export function telegramNotifier(token: string, chatId: string): Notifier {
       if (isHttps(deal.sourceUrl) && deal.sourceUrl !== buy) {
         links.push({ text: "📊 Fiyat geçmişi", url: deal.sourceUrl });
       }
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: formatMessage(deal, result),
-          parse_mode: "HTML",
-          link_preview_options: { is_disabled: true },
-          reply_markup: {
-            inline_keyboard: [
-              links,
-              [
-                { text: "✅ Aldım", callback_data: `bought:${dealId}` },
-                { text: "❌ Geç", callback_data: `skipped:${dealId}` },
-              ],
-            ].filter((row) => row.length),
-          },
-        }),
+      const reply_markup = {
+        inline_keyboard: [
+          links,
+          [
+            { text: "✅ Aldım", callback_data: `bought:${dealId}` },
+            { text: "❌ Geç", callback_data: `skipped:${dealId}` },
+          ],
+        ].filter((row) => row.length),
+      };
+      const call = (method: string, body: Record<string, unknown>) =>
+        fetch(`https://api.telegram.org/bot${token}/${method}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, parse_mode: "HTML", reply_markup, ...body }),
+        });
+
+      // Fotoğraf varsa fotoğraflı gönder; Telegram resmi alamazsa düz metne düş (fırsat kaçmasın).
+      if (isHttps(deal.imageUrl)) {
+        const res = await call("sendPhoto", { photo: deal.imageUrl, caption: fitCaption(deal, result) });
+        if (res.ok) return true;
+        console.warn(`sendPhoto başarısız (${res.status}), metinle gönderiliyor: ${await res.text()}`);
+      }
+      const res = await call("sendMessage", {
+        text: formatMessage(deal, result),
+        link_preview_options: { is_disabled: true },
       });
       if (!res.ok) throw new Error(`Telegram sendMessage ${res.status}: ${await res.text()}`);
       return true;
