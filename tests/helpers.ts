@@ -59,6 +59,6 @@ export function memoryStore() {
 
 export function recordingNotifier() {
   const sent: number[] = [];
-  const notifier: Notifier = { async send(id) { sent.push(id); } };
+  const notifier: Notifier = { async send(id) { sent.push(id); return true; } };
   return { notifier, sent };
 }

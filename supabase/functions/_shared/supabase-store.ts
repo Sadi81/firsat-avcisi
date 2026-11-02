@@ -10,6 +10,24 @@ export function createSupabaseClient(): SupabaseClient {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+/** Vault'taki uygulama sırrıyla karşılaştır (sır veritabanından çıkmaz). */
+export async function checkAppSecret(
+  db: SupabaseClient,
+  name: "firsat_cron_secret" | "firsat_webhook_secret",
+  value: string | null,
+): Promise<boolean> {
+  if (!value) return false;
+  const { data, error } = await db.rpc("check_app_secret", { p_name: name, p_value: value });
+  if (error) throw new Error(`check_app_secret: ${error.message}`);
+  return data === true;
+}
+
+export async function getWebhookSecret(db: SupabaseClient): Promise<string> {
+  const { data, error } = await db.rpc("get_webhook_secret");
+  if (error || typeof data !== "string") throw new Error(`get_webhook_secret: ${error?.message ?? "boş"}`);
+  return data;
+}
+
 function check<T>(res: { data: T; error: { message: string } | null }, what: string): T {
   if (res.error) throw new Error(`${what}: ${res.error.message}`);
   return res.data;

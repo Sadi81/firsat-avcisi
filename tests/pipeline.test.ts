@@ -84,3 +84,17 @@ test("elle giriş: asin verilirse ürün anahtarı amazon:<ASIN> olur", () => {
   assert.equal((n as { source: string }).source, "manual");
   assert.equal(isValidRaw(normalizeManual({ asin: "yanlis", title: "x", price: 10 })), false);
 });
+
+test("bildirim iletilemezse (Telegram ayarsız) 'bildirildi' sayılmaz; ayarlanınca ilk fırsatta gider", async () => {
+  const m = memoryStore();
+  const off = { async send() { return false; } };
+  for (const p of [5000, 5000, 5000]) {
+    await processDeal(item(p, { isRegularPrice: true }), m.store, off, undefined, m.now);
+  }
+  const o = await processDeal(item(1000), m.store, off, undefined, m.now);
+  assert.equal(o.notified, false);
+  assert.equal(m.deals[0].notifiedAt, null);
+  m.advance(0.5);
+  const n = recordingNotifier();
+  assert.equal((await processDeal(item(1000), m.store, n.notifier, undefined, m.now)).notified, true);
+});

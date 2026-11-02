@@ -1,28 +1,16 @@
 // collect: pg_cron birkaç dakikada bir çağırır.
 //   POST "{}" veya gövdesiz  → etkin kaynakları tara, yeni fırsatları işle
 //   POST [RawDeal, ...]      → dışarıdan gelen gözlemleri işle (elle giriş; {asin:"B0..."} yeterli)
-// Kimlik doğrulama: x-cron-secret başlığı = CRON_SECRET
+// Kimlik doğrulama: x-cron-secret başlığı = Vault'taki firsat_cron_secret
+// Telegram ayarı (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) yoksa tarama sürer, bildirim gitmez.
 
 import { collectFromSource, type CollectReport } from "../_shared/collector.ts";
 import { isValidRaw, normalizeManual, processDeal, type ProcessOutcome } from "../_shared/pipeline.ts";
 import { SOURCES } from "../_shared/sources/index.ts";
 import { SourceBlockedError } from "../_shared/sources/yaniyo.ts";
-import { createSupabaseClient, supabaseStore } from "../_shared/supabase-store.ts";
-import { telegramNotifier } from "../_shared/telegram.ts";
+import { checkAppSecret, createSupabaseClient, supabaseStore } from "../_shared/supabase-store.ts";
+import { disabledNotifier, notifierFromEnv } from "../_shared/telegram.ts";
 import { DEFAULT_CONFIG } from "../_shared/types.ts";
-
-function env(name: string): string {
-  const v = Deno.env.get(name);
-  if (!v) throw new Error(`${name} ortam değişkeni eksik`);
-  return v;
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body, null, 2), {
@@ -39,7 +27,8 @@ const summarize = (o: ProcessOutcome[]) =>
   }));
 
 Deno.serve(async (req) => {
-  if (!timingSafeEqual(req.headers.get("x-cron-secret") ?? "", env("CRON_SECRET"))) {
+  const db = createSupabaseClient();
+  if (!await checkAppSecret(db, "firsat_cron_secret", req.headers.get("x-cron-secret"))) {
     return json({ error: "yetkisiz" }, 401);
   }
 
@@ -47,8 +36,9 @@ Deno.serve(async (req) => {
     ...DEFAULT_CONFIG,
     notifyThreshold: Number(Deno.env.get("NOTIFY_THRESHOLD") ?? DEFAULT_CONFIG.notifyThreshold),
   };
-  const store = supabaseStore(createSupabaseClient());
-  const notifier = telegramNotifier(env("TELEGRAM_BOT_TOKEN"), env("TELEGRAM_CHAT_ID"));
+  const store = supabaseStore(db);
+  const notifier = notifierFromEnv((n) => Deno.env.get(n));
+  const telegram = notifier === disabledNotifier ? "ayarlı değil (bildirim gönderilmiyor)" : "açık";
 
   // pg_cron (pg_net) her zaman bir gövde gönderir; "{}" = kaynakları tara.
   const body = req.method === "POST" ? (await req.text()).trim() : "";
@@ -74,7 +64,7 @@ Deno.serve(async (req) => {
         errors.push(`${raw.productKey}: ${(e as Error).message}`);
       }
     }
-    return json({ processed: outcomes.length, deals: summarize(outcomes), errors });
+    return json({ telegram, processed: outcomes.length, deals: summarize(outcomes), errors });
   }
 
   const reports: CollectReport[] = [];
@@ -85,5 +75,5 @@ Deno.serve(async (req) => {
   }
   const errors = reports.flatMap((r) => r.errors);
   if (errors.length) console.error(errors);
-  return json(reports.map((r) => ({ ...r, outcomes: summarize(r.outcomes) })));
+  return json({ telegram, reports: reports.map((r) => ({ ...r, outcomes: summarize(r.outcomes) })) });
 });

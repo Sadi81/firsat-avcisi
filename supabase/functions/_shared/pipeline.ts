@@ -23,7 +23,8 @@ export interface Store {
 }
 
 export interface Notifier {
-  send(dealId: number, deal: RawDeal, result: ScoreResult): Promise<void>;
+  /** true: gerçekten iletildi. false: iletilemedi (ör. Telegram henüz ayarlı değil) → "bildirildi" sayılmaz. */
+  send(dealId: number, deal: RawDeal, result: ScoreResult): Promise<boolean>;
 }
 
 export interface ProcessOutcome {
@@ -92,8 +93,7 @@ export async function processDeal(
 
   const last = await store.lastNotified(deal.productKey);
   let notified = false;
-  if (shouldNotify(deal.price, result, last, cfg, now)) {
-    await notifier.send(dealId, deal, result);
+  if (shouldNotify(deal.price, result, last, cfg, now) && await notifier.send(dealId, deal, result)) {
     await store.markNotified(dealId);
     notified = true;
   }

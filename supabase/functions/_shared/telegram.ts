@@ -72,6 +72,20 @@ export function telegramNotifier(token: string, chatId: string): Notifier {
         }),
       });
       if (!res.ok) throw new Error(`Telegram sendMessage ${res.status}: ${await res.text()}`);
+      return true;
     },
   };
+}
+
+/** Telegram henüz ayarlı değilken: tarama ve puanlama sürer, hiçbir şey "bildirildi" sayılmaz. */
+export const disabledNotifier: Notifier = {
+  send() {
+    return Promise.resolve(false);
+  },
+};
+
+/** TELEGRAM_BOT_TOKEN ve TELEGRAM_CHAT_ID varsa gerçek bildirimci, yoksa devre dışı. */
+export function notifierFromEnv(get: (name: string) => string | undefined): Notifier {
+  const token = get("TELEGRAM_BOT_TOKEN"), chatId = get("TELEGRAM_CHAT_ID");
+  return token && chatId ? telegramNotifier(token, chatId) : disabledNotifier;
 }
