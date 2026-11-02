@@ -58,7 +58,7 @@ Bu araç kişisel kullanım içindir ve şu sınırlarla çalışır (`supabase/
 - [x] Veritabanı şeması, puanlama, tekrar bildirim engeli, Telegram bildirimi ve karar butonları
 - [x] Yaniyo adaptörü (canlı sitede denendi)
 - [x] Testler (31, Node ve Deno), tip kontrolü
-- [ ] Supabase'e kurulum ve gerçek Telegram ile uçtan uca deneme
+- [x] Supabase'e kurulum ve gerçek Telegram ile uçtan uca deneme
 - [ ] Yaniyo'dan izin yanıtı
 - [ ] Rutin fiyat takipçisi (izleme listesindeki ürünlerin düzenli fiyatı)
 - [ ] Yeniden satış için başka pazar yerleriyle fiyat karşılaştırması
@@ -66,32 +66,36 @@ Bu araç kişisel kullanım içindir ve şu sınırlarla çalışır (`supabase/
 
 ## Kurulum
 
-1. **Telegram botu**: @BotFather'a `/newbot` yazın ve token'ı alın. Bota bir mesaj atın, sonra
-   `https://api.telegram.org/bot<TOKEN>/getUpdates` adresinden `chat.id` değerini alın.
-2. **Supabase projesi** oluşturun, ardından:
-   ```bash
-   supabase link --project-ref <PROJECT_REF>
-   supabase db push
-   supabase secrets set TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... \
-     CRON_SECRET=$(openssl rand -hex 24) TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 24)
-   supabase functions deploy collect
-   supabase functions deploy telegram-webhook
-   ```
-3. **Butonlar için webhook**:
-   ```bash
-   curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-     -d url=https://<PROJECT_REF>.supabase.co/functions/v1/telegram-webhook \
-     -d secret_token=<TELEGRAM_WEBHOOK_SECRET>
-   ```
-4. **Zamanlayıcı**: `supabase/cron.sql` içindeki yer tutucuları doldurup SQL Editor'da çalıştırın.
+Canlı kurulum: Supabase projesi `firsat-avcisi` (Frankfurt), zamanlayıcı 2 dakikada bir çalışıyor,
+Telegram botu bağlı.
+
+Sıfırdan kurmak için:
+
+1. Supabase projesi açın ve `supabase/migrations/` altındaki migration'ları sırayla uygulayın.
+   Zamanlayıcı ve webhook sırları (`firsat_cron_secret`, `firsat_webhook_secret`) Vault'ta otomatik üretilir
+   ve veritabanından hiç çıkmaz.
+2. `collect` ve `telegram-webhook` fonksiyonlarını `verify_jwt = false` ile yükleyin (kendi doğrulamalarını yaparlar).
+3. **Edge Function Secrets** sayfasına `TELEGRAM_BOT_TOKEN` ekleyin. İsteğe bağlı olarak `NOTIFY_THRESHOLD`
+   (varsayılan 60) da ekleyebilirsiniz.
+4. `supabase/cron.sql` dosyasında `<PROJECT_REF>` değerini doldurup SQL Editor'da çalıştırın: zamanlayıcı kurulur.
+   Aynı dosyadaki yorumlu komutla botu webhook'a bağlayın. Bot başka bir adrese bağlıysa kurulum onu değiştirmez.
+5. Bota `/id` yazın ve gelen sayıyı `TELEGRAM_CHAT_ID` olarak kaydedin. Tekrar `/id` yazınca
+   "bildirim gönderiyor" yanıtı gelirse kurulum tamamdır.
+
+Telegram ayarlanmadan önce de tarama ve puanlama çalışır; bildirimler gönderilmez ve
+"bildirildi" sayılmaz.
 
 ### Elle fırsat göndermek (test veya başka kaynak)
 
-```bash
-curl -X POST https://<PROJECT_REF>.supabase.co/functions/v1/collect \
-  -H "x-cron-secret: <CRON_SECRET>" -H "content-type: application/json" \
-  -d '{"asin":"B0XXXXXXXX","title":"Makita 18V 5.0Ah Batarya","price":900,"listPrice":3500,"sellerIsAmazon":true}'
+```sql
+select net.http_post(
+  url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/collect',
+  headers := jsonb_build_object('content-type', 'application/json',
+    'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'firsat_cron_secret')),
+  body    := '{"asin":"B0XXXXXXXX","title":"Makita 18V 5.0Ah Batarya","price":900,"listPrice":3500,"sellerIsAmazon":true}'::jsonb);
 ```
+
+(SQL Editor'da çalıştırılır; sır veritabanından çıkmaz.)
 
 Rutin fiyat örneği eklemek için kayda `"isRegularPrice": true` ekleyin.
 
